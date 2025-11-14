@@ -31,6 +31,7 @@ node_modules
 /libpeerconnection.log
 npm-debug.log
 yarn-error.log
+error.log
 testem.log
 /typings
 
@@ -42,5 +43,7 @@ Thumbs.db
 .nx/workspace-data
 .cursor/rules/nx-rules.mdc
 .github/instructions/nx.instructions.md
+.env
+.env.local
 
 test-output
