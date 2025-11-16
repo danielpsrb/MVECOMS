@@ -42,7 +42,7 @@ export class ForbiddenError extends AppError {
 
 // Database error
 export class DatabaseError extends AppError {
-  constructor(message = "Database error") {
+  constructor(message = "Database error", details?: any) {
     super(message, 500, true, details);
   }
 }
