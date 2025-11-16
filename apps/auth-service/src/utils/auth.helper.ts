@@ -1,25 +1,51 @@
+import bcrypt from "bcryptjs";
 import crypto from 'crypto';
-import { ValidationError } from '../../../../packages/error-handler';
-import redis from '../../../../packages/libs/redis';
+import qrcode from "qrcode";
+import speakeasy from "speakeasy";
+import prisma from '@packages/libs/prisma';
+import { ValidationError } from '@packages/error-handler';
+import redis from '@packages/libs/redis';
 import { sendEmail } from './sendMail';
 import { NextFunction } from 'express';
-import path from 'path';
+// import path from 'path';
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// validate regis
+// Password regex min 8 karakter dengan kombinasi huruf dan angka
+const passwordRegex = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/;
+
+const BCRYPT_SALT_ROUNDS = 10;
+
+// validate register user or seller data
 export const validateRegistrationData = (data: any, userType: "user" | "seller") => {
   // Implement validation logic here
-  const { name, email, password, phone_number, country } = data;
+  const { name, email, password, confirmPassword, phone_number, country } =
+    data;
 
   if (
-    !name || !email || !password || (userType === "seller" && (!phone_number || !country))
+    !name ||
+    !email ||
+    !password ||
+    !confirmPassword ||
+    (userType === "seller" && (!phone_number || !country))
   ) {
-    throw new ValidationError('Missing required fields');
+    throw new ValidationError("Missing required fields");
   }
 
   if (!emailRegex.test(email)) {
     throw new ValidationError("Invalid email format");
+  }
+
+  // cek password minimal 8 karakter, huruf + angka
+  if (!passwordRegex.test(password)) {
+    throw new ValidationError(
+      "Password must be at least 8 characters and contain both letters and numbers"
+    );
+  }
+
+  // cek password dan confirmPassword sama
+  if (password !== confirmPassword) {
+    throw new ValidationError("Password and confirm password do not match");
   }
 };
 
@@ -61,3 +87,36 @@ export const trackOtpRequests = async (email: string, next: NextFunction) => {
 
   await redis.set(otpRequestKey, (otpRequest + 1).toString(), "EX", 3600); // Track request for 1 hour
 }
+
+export const verifyEmailOtp = async (email: string, otp: string) => {
+  const storedOtp = await redis.get(`otp:${email}`);
+  if (!storedOtp) {
+    throw new ValidationError("Invalid or expired OTP!");
+  }
+
+  const failedAttemptsKey = `otp_attempts:${email}`;
+  const failedAttempts = parseInt((await redis.get(failedAttemptsKey)) || "0");
+
+  if (storedOtp !== otp) {
+    if (failedAttempts >= 2) {
+      await redis.set(`otp_lock:${email}`, "locked", "EX", 2700);
+      await redis.del(`otp:${email}`, failedAttemptsKey);
+      throw new ValidationError(
+        "Account locked due to multiple failed attempts! Try again after 45 minutes."
+      );
+    }
+
+    await redis.set(
+      failedAttemptsKey,
+      (failedAttempts + 1).toString(),
+      "EX",
+      300
+    );
+
+    throw new ValidationError(
+      `Invalid OTP! You have ${2 - failedAttempts} attempts left.`
+    );
+  }
+
+  await redis.del(`otp:${email}`, failedAttemptsKey);
+};
