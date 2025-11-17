@@ -6,24 +6,19 @@ import {
   checkOtpRestrictions,
   sendOtp,
   trackOtpRequests,
-  verifyEmailOtp
+  verifyEmailOtp,
+  generate2FASecret,
+  verify2FACode,
+  generateRecoveryCodes,
+  verifyAndConsumeRecoveryCode,
 } from "../utils/auth.helper";
 import prisma from '@packages/libs/prisma';
-import { ValidationError } from '@packages/error-handler';
+import { ValidationError, AuthError } from '@packages/error-handler';
+import { setCookie } from '../utils/cookies/setCookie';
 
-const JWT_SECRET = process.env.JWT_SECRET || "CHANGE_ME_MAIN";
-const JWT_TEMP_SECRET = process.env.JWT_TEMP_SECRET || "CHANGE_ME_TEMP";
 const SALT_ROUNDS = 10;
-
-function signTempToken(payload: object) {
-  const options: SignOptions = { expiresIn: "10m" };
-  return jwt.sign(payload, JWT_TEMP_SECRET as string, options);
-}
-
-function signMainToken(payload: object) {
-  const options: SignOptions = { expiresIn: "7d" };
-  return jwt.sign(payload, JWT_SECRET as string, options);
-}
+const JWT_TEMP_SECRET = process.env.JWT_TEMP_SECRET;
+const JWT_MAIN_SECRET = process.env.JWT_MAIN_SECRET;
 
 // Register a new user
 export const userRegistration = async (req: Request, res: Response, next: NextFunction) => {
@@ -94,3 +89,59 @@ export const verifyUserEmail = async (
   }
 };
 
+export const loginUser = async(req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email, password } = req.body;
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!email || !password) {
+      return next(new ValidationError("Email and password are required"));
+    }
+
+    if (!emailRegex.test(email)) {
+      return next(new ValidationError("Invalid email format"));
+    }
+
+    const user = await prisma.users.findUnique({ where: { email } });
+
+    if (!user) {
+      return next(new AuthError("Invalid credentials"));
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      return next(new AuthError("Invalid credentials"));
+    }
+
+    // Generate temp token and main token for 2FA
+    const tempToken = jwt.sign(
+      { userId: user.id },
+      JWT_TEMP_SECRET as string,
+        {
+          expiresIn: "6m",
+        }
+    );
+    const mainToken = jwt.sign(
+      { userId: user.id },
+        JWT_MAIN_SECRET as string,
+        {
+          expiresIn: "10m",
+        }
+    );
+
+    setCookie(res, 'temp_token', tempToken);
+    setCookie(res, 'main_token', mainToken);
+
+    if (!user.is2FAEnabled) {
+      return res.status(200).json({
+        status: "success",
+        message:
+          "Login successful. Two Factor Authentication is not enabled. Please enable it for better security.",
+      });
+    }
+
+  } catch (error) {
+    return next(error);
+  }
+}
