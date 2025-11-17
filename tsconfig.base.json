@@ -20,7 +20,7 @@
     "paths": {
       "@packages/*": [
         "packages/*"
-      ]
+      ],
     },
     "customConditions": ["@eshop/source"]
   }
