@@ -6,7 +6,7 @@ import prisma from '@packages/libs/prisma';
 import { ValidationError } from '@packages/error-handler';
 import redis from '@packages/libs/redis';
 import { sendEmail } from './sendMail';
-import { NextFunction } from 'express';
+import { Request, Response, NextFunction } from "express";
 // import path from 'path';
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -49,17 +49,17 @@ export const validateRegistrationData = (data: any, userType: "user" | "seller")
   }
 };
 
-export const checkOtpRestrictions = async (email:string, next:NextFunction) => {
+export const checkOtpRestrictions = async (email:string) => {
   if (await redis.get(`otp_lock:${email}`)) {
-    return next(new ValidationError('Account locked due to multiple failed attempts!. Try again after 30 minutes.'));
+    throw new ValidationError('Account locked due to multiple failed attempts!. Try again after 30 minutes.');
   }
 
   if (await redis.get(`otp_spam_lock:${email}`)) {
-    return next(new ValidationError('Too many OTP requests! Try again after 1 hour.'));
+    throw new ValidationError('Too many OTP requests! Try again after 1 hour.');
   }
 
   if (await redis.get(`otp_cooldown:${email}`)) {
-    return next(new ValidationError('Please wait 1 minute before requesting a new OTP.'));
+    throw new ValidationError('Please wait 1 minute before requesting a new OTP.');
   }
 }
 
@@ -75,14 +75,14 @@ export const sendOtp = async (name: string, email: string, template: string) => 
   console.log(`Sending OTP ${otp} to email ${email} using template ${template}`);
 };
 
-export const trackOtpRequests = async (email: string, next: NextFunction) => {
+export const trackOtpRequests = async (email: string) => {
   const otpRequestKey = `otp_requests_count:${email}`;
 
   let otpRequest = parseInt(await redis.get(otpRequestKey) || '0');
 
   if (otpRequest >= 2) {
     await redis.set(`otp_spam_lock:${email}`, 'locked', "EX", 3600); // 1 hour lock
-    return next(new ValidationError('Too many OTP requests! Try again after 1 hour.'));
+    throw new ValidationError('Too many OTP requests! Try again after 1 hour.');
   }
 
   await redis.set(otpRequestKey, (otpRequest + 1).toString(), "EX", 3600); // Track request for 1 hour
@@ -119,4 +119,60 @@ export const verifyEmailOtp = async (email: string, otp: string) => {
   }
 
   await redis.del(`otp:${email}`, failedAttemptsKey);
+};
+
+export const handleForgotPassword = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  userType: "user" | "seller"
+) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      throw new ValidationError("Email is required");
+    }
+    if (!emailRegex.test(email)) {
+      throw new ValidationError("Invalid email format");
+    }
+    // find user/seller in database
+    const user = userType === "user" && await prisma.users.findUnique({ where: { email } })
+
+    if (!user) {
+      throw new ValidationError(`${userType} with this email does not exist`);
+    }
+
+    await checkOtpRestrictions(email);
+    await trackOtpRequests(email);
+
+    //Generate otp and send email to reset password
+    await sendOtp(email, user.name, "forgot-password-user-mail");
+
+    res.status(200).json({
+      message: 'OTP sent to email. Please check your email to reset your password.',
+    })
+  } catch (error) {
+    return next(error);
+  }
+};
+
+export const verifyForgotPasswordOtp = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) {
+      throw new ValidationError("All fields are required");
+    }
+
+    await verifyEmailOtp(email, otp);
+
+    res.status(200).json({
+      message: 'OTP verified successfully. You can now reset your password.',
+    });
+  } catch (error) {
+    return next(error);
+  }
 };

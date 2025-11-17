@@ -1,16 +1,14 @@
 import  { NextFunction, Request, Response} from 'express';
 import bcrypt from "bcryptjs";
-import jwt, {SignOptions} from "jsonwebtoken";
+import jwt from "jsonwebtoken";
 import {
   validateRegistrationData,
   checkOtpRestrictions,
   sendOtp,
   trackOtpRequests,
   verifyEmailOtp,
-  generate2FASecret,
-  verify2FACode,
-  generateRecoveryCodes,
-  verifyAndConsumeRecoveryCode,
+  handleForgotPassword,
+  verifyForgotPasswordOtp,
 } from "../utils/auth.helper";
 import prisma from '@packages/libs/prisma';
 import { ValidationError, AuthError } from '@packages/error-handler';
@@ -31,8 +29,8 @@ export const userRegistration = async (req: Request, res: Response, next: NextFu
       return next(new ValidationError("User already exists with this email"));
     }
 
-    await checkOtpRestrictions(email, next);
-    await trackOtpRequests(email, next);
+    await checkOtpRestrictions(email);
+    await trackOtpRequests(email);
     await sendOtp(name, email, "user-activation-mail");
 
     res
@@ -140,8 +138,79 @@ export const loginUser = async(req: Request, res: Response, next: NextFunction) 
           "Login successful. Two Factor Authentication is not enabled. Please enable it for better security.",
       });
     }
-
   } catch (error) {
     return next(error);
+  }
+}
+
+// Forgot password for user
+export const userForgotPassword = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    await handleForgotPassword(req, res, next, "user");
+  } catch (error) {
+    return next(error);
+  }
+};
+
+// Verify forgot password OTP
+export const verifyUserForgotPassword = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    await verifyForgotPasswordOtp(req, res, next);
+  } catch (error) {
+
+  }
+}
+
+// Reset password for user
+export const resetUserPassword = async (
+  req: Request,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const { email, newPassword } = req.body;
+
+    if (!email || !newPassword) {
+      return next(new ValidationError("All fields are required"));
+    }
+
+    const user = await prisma.users.findUnique({ where: { email } });
+    if (!user) {
+      return next(new ValidationError("User not found"));
+    }
+
+    // compare new password with the existing one
+    const isSamePassword = await bcrypt.compare(newPassword, user.password);
+    if (isSamePassword) {
+      return next(
+        new ValidationError(
+          "New password must be different from the old password"
+        )
+      );
+    };
+
+    // and now hash the new password user
+    const hashedPassword = await bcrypt.hash(newPassword, SALT_ROUNDS);
+
+    await prisma.users.update({
+      where: { email },
+      data: { password: hashedPassword },
+    });
+
+    res.status(200).json({
+      status: "ok",
+      message: "Password reset successfully",
+    })
+
+  } catch (error) {
+    next(error);
   }
 }
